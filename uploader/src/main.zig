@@ -18,9 +18,10 @@ const SerialError = error{
     CantSetTerminfo,
 } || File.OpenError;
 
+// TODO try dev/ttyAMC0 then AMC1
 const allocator = std.heap.c_allocator;
 const port = "/dev/ttyACM0";
-const baudrate = 19200;
+const baudrate = c.B115200;
 
 var vm: Forth.VM = undefined;
 var working_file: ?[:0]u8 = null;
@@ -48,24 +49,14 @@ fn openSerial() SerialError!File {
     });
     errdefer f.close();
 
-    const baud: c_uint = switch (baudrate) {
-        4800 => c.B4800,
-        9600 => c.B9600,
-        19200 => c.B19200,
-        38400 => c.B38400,
-        57600 => c.B57600,
-        115200 => c.B115200,
-        else => c.B9600,
-    };
-
     var tios: c.termios = undefined;
 
     if (c.tcgetattr(f.handle, &tios) != 0) {
         return error.NoTerminfo;
     }
 
-    _ = c.cfsetispeed(&tios, baud);
-    _ = c.cfsetospeed(&tios, baud);
+    _ = c.cfsetispeed(&tios, baudrate);
+    _ = c.cfsetospeed(&tios, baudrate);
 
     // 8nX, minimal flow control, raw
     c.cfmakeraw(&tios);
@@ -107,32 +98,18 @@ fn transmit() !void {
     };
 
     _ = try serial.write(&info_buf);
+    _ = c.usleep(40000);
 
-    const pm = progmem;
-    _ = try serial.write(pm);
-    std.debug.print("{b} {b} {b} {b}\n", .{
-        pm[0],
-        pm[1],
-        pm[2],
-        pm[3],
-    });
-
-    //     // TODO unexpected necessary [1]u8
-    //     var buf: [1]u8 = .{0};
-    //
-    //     _ = try serial.write(&buf);
-    //     std.debug.print("write: {}", .{buf[0]});
-    //
-    //     while (true) {
-    //         const read = try serial.read(&buf);
-    //         if (read == 1) {
-    //             break;
-    //         }
-    //     }
-    //     std.debug.print("read: {}\n", .{buf[0]});
-    //     // _ = c.usleep(50000);
-    //
-    //     std.debug.print("ok\n\n", .{});
+    _ = try serial.write(progmem);
+    _ = c.usleep(100);
+    for (eeprom) |_, i| {
+        _ = try serial.write(eeprom[i .. i + 1]);
+        _ = c.usleep(11000);
+    }
+    for (config) |_, i| {
+        _ = try serial.write(config[i .. i + 1]);
+        _ = c.usleep(11000);
+    }
 }
 
 fn readFile(filename: []const u8) ![]u8 {
@@ -147,6 +124,9 @@ fn loadWorkingFile() Forth.VM.Error!void {
         std.debug.print("working file read error\n", .{});
         return error.Panic;
     };
+    try vm.interpretBuffer("0 to progmem-here");
+    try vm.interpretBuffer("0 to eeprom-here");
+    try vm.interpretBuffer("0 to config-mask");
     try vm.interpretBuffer(last_load);
     std.debug.print("\n", .{});
     progmem_len = try vmInterpretPopTop(usize, "progmem-here");
@@ -172,8 +152,6 @@ fn startRepl() Forth.VM.Error!void {
 
 fn reloadWorkingFile(_: *Forth.VM) Forth.VM.Error!void {
     allocator.free(last_load);
-    try vm.interpretBuffer("0 to progmem-here");
-    try vm.interpretBuffer("0 to eeprom-here");
 
     try loadWorkingFile();
     transmit() catch {
@@ -254,6 +232,7 @@ pub fn main() anyerror!void {
     defer allocator.free(last_load);
 
     try transmit();
+
     while (true) {
         startRepl() catch |err| {
             switch (err) {

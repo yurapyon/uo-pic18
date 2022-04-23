@@ -70,10 +70,8 @@ create progmem 32 _K shorts allot
 : label
   progmem-here constant ;
 
-: prog-addr,abs ( offset -- )
-  \ just drop because progmem starts at 0
-  drop
-  ;
+: prog-addr,abs ( offset -- addr )
+  0x0 + ;
 
 \ TODO
 : prog-addr,rel ( addr dest -- )
@@ -94,41 +92,74 @@ create eeprom 512 chars allot
 : eeprom-label
   eeprom-here constant ;
 
-: eeprom-addr ( offset -- )
+: eeprom-addr ( offset -- addr )
   0x380000 + ;
 
 create config 10 chars allot
 0 value config-mask
 
 : config, ( val n -- )
-  dup 1 swap lshift config-mask or to config-mask
+  9 over - 1 swap lshift
+  config-mask or to config-mask
   config + c! ;
 
-: config-addr ( offset -- )
+: config-addr ( offset -- addr )
   0x300000 + ;
 
 \ =====
 
+\ instruction
+\ arg-ct arg1 arg2 arg3 generator
+0
+1 cfield >arg-ct
+1 cfield >arg1
+1 cfield >arg2
+1 cfield >arg3
+cell field >generator
+constant instruction
+
+create instructions 32 _K instruction * allot
+instructions value instructions-at
+
+: instruction, ( arg-ct generator -- )
+  instructions-at
+  tuck >generator !
+  tuck >arg-ct !
+  tuck >arg1 !
+  tuck >arg2 !
+  tuck >arg3 !
+  instruction +to instructions-at ;
+
+\ =====
+
 : byte-oriented ( f d a -- params )
-  swap 1 lshift or 8 lshift or ;
+  0x1 and swap 0x1 and
+  1 lshift or
+  8 lshift
+  swap 0xff and or ;
 
 : byte-oriented-a ( f a -- params )
-  8 lshift or ;
+  0x1 and 8 lshift
+  swap 0xff and or ;
 
 : bit-oriented ( f b a -- params )
-  [compile] byte-oriented ;
+  0x1 and swap 0x7 and
+  1 lshift or
+  8 lshift
+  swap 0xff and or ;
 
-\ todo clean up
-: literal-inst ;
-: control-11 ;
-: control-8 ;
+: literal-inst 0xff and ;
+: control-11 0x7ff and ;
+: control-8 0xff and ;
+: return-inst 0x1 and ;
 
 : fsr-inst ( fn k -- params )
-  swap 6 lshift or ;
+  0x3f and swap
+  0x3 and 6 lshift or ;
 
-: return-inst ;
+: _addwf,  ( f d a -- ) byte-oriented   b< 0010 01__ ____ ____ or opcode, ;
+\ : addwf,   ( f d a -- ) 3 ' _addwf, <instruction> ;
 
-: addwf,   ( f d a -- ) byte-oriented   b< 0010 01__ ____ ____ or opcode, ;
 : addwfc,  ( f d a -- ) byte-oriented   b< 0010 00__ ____ ____ or opcode, ;
 : andwf,   ( f d a -- ) byte-oriented   b< 0001 01__ ____ ____ or opcode, ;
 : clrf,    ( f a -- )   byte-oriented-a b< 0110 101_ ____ ____ or opcode, ;
@@ -136,14 +167,15 @@ create config 10 chars allot
 : decf,    ( f d a -- ) byte-oriented   b< 0000 01__ ____ ____ or opcode, ;
 : incf,    ( f d a -- ) byte-oriented   b< 0010 10__ ____ ____ or opcode, ;
 : iorwf,   ( f d a -- ) byte-oriented   b< 0001 00__ ____ ____ or opcode, ;
-: movwf,   ( f d a -- ) byte-oriented   b< 0101 00__ ____ ____ or opcode, ;
+: movf,    ( f d a -- ) byte-oriented   b< 0101 00__ ____ ____ or opcode, ;
 : movff,   ( fs fd -- )
-  swap                                  b< 1100 ____ ____ ____ or opcode,
-                                        b< 1111 ____ ____ ____ or opcode, ;
+  0xfff and swap                        b< 1100 ____ ____ ____ or opcode,
+  0xfff and                             b< 1111 ____ ____ ____ or opcode, ;
 : movffl,  ( fs fd -- )
   over 10 rshift                        b< 0000 0000 0110 ____ or opcode,
-  tuck 12 rshift swap 2 lshift or       b< 1111 ____ ____ ____ or opcode,
-                                        b< 1111 ____ ____ ____ or opcode, ;
+  tuck 12 rshift
+  swap 0x3ff and 2 lshift or            b< 1111 ____ ____ ____ or opcode,
+  0xfff and                             b< 1111 ____ ____ ____ or opcode, ;
 : movwf,   ( f a -- )   byte-oriented-a b< 0110 111_ ____ ____ or opcode, ;
 : mulwf,   ( f a -- )   byte-oriented-a b< 0000 001_ ____ ____ or opcode, ;
 : negf,    ( f a -- )   byte-oriented-a b< 0110 110_ ____ ____ or opcode, ;
@@ -179,13 +211,14 @@ create config 10 chars allot
 : bov,     ( n -- )     control-8       b< 1110 0100 ____ ____ or opcode, ;
 : bra,     ( n -- )     control-11      b< 1101 0___ ____ ____ or opcode, ;
 : bz,      ( n -- )     control-8       b< 1110 0000 ____ ____ or opcode, ;
+\ TODO fix this
 : call,    ( k s -- )
-  9 lshift over 8 rshift or             b< 1110 110_ ____ ____ or opcode,
-  swap                                  b< 1111 ____ ____ ____ or opcode, ;
+  0x1 and 8 lshift over 12 rshift or    b< 1110 110_ ____ ____ or opcode,
+  0xfff and                             b< 1111 ____ ____ ____ or opcode, ;
 : callw,   ( -- )                       b< 0000 0000 0001 0100 opcode, ;
 : goto,    ( k -- )
-  dup 8 rshift                          b< 1110 1111 ____ ____ or opcode,
-  swap                                  b< 1111 ____ ____ ____ or opcode, ;
+  dup 0xff and                          b< 1110 1111 ____ ____ or opcode,
+  8 rshift 0xfff and                    b< 1111 ____ ____ ____ or opcode, ;
 : rcall,   ( n -- )     control-11      b< 1101 1___ ____ ____ or opcode, ;
 : retfie,  ( s -- )     return-inst     b< 0000 0000 0001 000_ or opcode, ;
 : retlw,   ( k -- )     control-8       b< 0000 1100 ____ ____ or opcode, ;
@@ -202,9 +235,10 @@ create config 10 chars allot
 : andlw,   ( k -- )     literal-inst    b< 0000 1011 ____ ____ or opcode, ;
 : iorlw,   ( k -- )     literal-inst    b< 0000 1001 ____ ____ or opcode, ;
 : lfsr,    ( fn k -- )
-  tuck 10 rshift swap 4 lshift or       b< 1110 1110 00__ ____ or opcode,
-                                        b< 1111 00__ ____ ____ or opcode, ;
-: movlb,   ( k -- )     literal-inst    b< 0000 0001 00__ ____ or opcode, ;
+  tuck 10 rshift swap
+  0x3 and 4 lshift or                   b< 1110 1110 00__ ____ or opcode,
+  0x3ff and                             b< 1111 00__ ____ ____ or opcode, ;
+: movlb,   ( k -- )     0x3f and        b< 0000 0001 00__ ____ or opcode, ;
 : movlw,   ( k -- )     literal-inst    b< 0000 1110 ____ ____ or opcode, ;
 : mullw,   ( k -- )     literal-inst    b< 0000 1101 ____ ____ or opcode, ;
 : retlw,   ( k -- )     literal-inst    b< 0000 1100 ____ ____ or opcode, ;
